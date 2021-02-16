@@ -1,12 +1,15 @@
 !-----------------------------------------
 !	author : huangyuhan@pku.edu.cn
+!            
 !	purpose : generate tecplot binary files
 !-----------------------------------------
 module tecplot
 implicit none
 type,abstract,public :: tecplot_file
 	private
-	integer :: max_I, max_J, max_K
+
+        integer :: max_I, max_J
+        integer :: max_K  =1 !Need this dimension even though it is  2D
 	integer :: n_data
 	character(len=10),allocatable :: name_variables(:)
 	logical :: isInitialized = .false.
@@ -36,11 +39,11 @@ end type tecplot_time_file
 private :: plt_init_sb, plt_write_mesh_sb
 
 contains
-	subroutine plt_init_sb(this, fname, nnx, nny, nnz, title, variables)
+	subroutine plt_init_sb(this, fname, nnx, nny, title, variables)
 	implicit none
 	class(tecplot_time_file) :: this
 	character(len=*),intent(in) :: fname
-	integer,intent(in) :: nnx,nny,nnz
+	integer,intent(in) :: nnx,nny
 	character(len=*),intent(in) :: title
 	character(len=*),intent(in) :: variables
 	real(kind=4) :: rand_num
@@ -51,9 +54,9 @@ contains
 		return
 	endif
 
-	this%max_I = nnx
-	this%max_J = nny
-	this%max_K = nnz
+        this%max_I = nnx
+        this%max_J = nny
+ 
 	call RANDOM_NUMBER(rand_num)
 	this%fid = int(rand_num*1000+10)
 	open(unit=this%fid, file=fname, status='replace', form='unformatted', access='stream')
@@ -61,7 +64,7 @@ contains
 	call RANDOM_NUMBER(rand_num)
 	this%sfid = int(rand_num*1000+10)
 	open(unit=this%sfid, status='scratch', form='unformatted', access='stream')
-	call this%write_header(nnx,nny,nnz,title,variables)
+	call this%write_header(nnx,nny,title,variables)
 	this%isInitialized = .true.
 	this%n_zone_header = 0
 	this%n_zone_data = 0
@@ -135,12 +138,12 @@ contains
 	this%n_zone_data = 0
 	end subroutine plt_complete_sb
 
-	subroutine plt_write_header_sb(this,nnx,nny,nnz,title,variables)
+	subroutine plt_write_header_sb(this,nnx,nny,title,variables)
 	use string
 	implicit none
 	class(tecplot_file) :: this
 	integer(kind=1) :: temp_int_1
-	integer,intent(in) :: nnx,nny,nnz
+	integer,intent(in) :: nnx,nny
 	character(len=*),intent(in) :: title
 	character(len=*),intent(in) :: variables
 	type(string_splitter) :: splitter
@@ -257,14 +260,15 @@ contains
 	end subroutine plt_count_var_sb
 
 	! passive variables not supported yet.
-	subroutine plt_write_zone_data_sb(this, type_list, shared_list, time_data)
+	subroutine plt_write_zone_data_sb(this, type_list, shared_list,grid_data ,time_data)
 	implicit none
 	class(tecplot_time_file) :: this
 	integer,intent(in) :: type_list(this%n_data)
-	integer,intent(in) :: shared_list(this%n_data)
-	real(kind=4), intent(in) :: time_data(this%max_I,this%max_J,this%max_K,this%n_data)
+        integer,intent(in) :: shared_list(this%n_data)
+        real(kind=4), intent(in) :: grid_data(this%max_I, this%max_J, 2)
+	real(kind=4), intent(in) :: time_data(this%max_I,this%max_J,this%n_data-2)
 	real(kind=4) :: ZONEMARKER = 299.0
-	real(kind=4),allocatable :: temp_data(:,:,:)
+	real(kind=8),allocatable :: temp_data(:,:)
 	integer :: i,j,k,m
 	integer :: max_I,max_J,max_K
 
@@ -278,44 +282,66 @@ contains
 		write(*,*) 'TECPLOT, ERROR : wrong type list size or shared list size'
 		return
 	endif
-	do i=1,this%n_data
-		if(type_list(i) .ne. 1)then
-			write(*,*) 'TECPLOT, ERROR : only float data format supported now'
-			return
-		endif
-	enddo
+	!do i=1,this%n_data
+	!	if(type_list(i) .ne. 1)then
+	!		write(*,*) 'TECPLOT, ERROR : only float data format supported now'
+	!		return
+	!	endif
+	!enddo
 
-	if(size(time_data).ne.(this%max_I*this%max_J*this%max_K*this%n_data))then
-		write(*,*) 'TECPLOT ERROR : wrong data array size. size must be nx*ny*nz*n_data.',&
-			' Shared data will be omitted but still must be provided in the data array'
-		return
-	endif
+	!if(size(time_data).ne.(this%max_I*this%max_J*this%max_K*this%n_data))then
+	!	write(*,*) 'TECPLOT ERROR : wrong data array size. size must be nx*ny*nz*n_data.',&
+	!		' Shared data will be omitted but still must be provided in the data array'
+	!	return
+	!endif
 
 
 	max_I = this%max_I
 	max_J = this%max_J
 	max_K = this%max_K
 
-	allocate(temp_data(this%max_I,this%max_J,this%max_K))
+	allocate(temp_data(this%max_I,this%max_J))
 	write(this%sfid) ZONEMARKER
 	! type: 1=float, 2=double, 3=long int, 4=short int, 5=byte, 6=bit
 	write(this%sfid) type_list 
 	write(this%sfid) 0 ! no passive variables
 	write(this%sfid) 1 ! has shared variables
 	write(this%sfid) shared_list
-	write(this%sfid) -1
-	do i=1,this%n_data
+        write(this%sfid) -1
+
+        !Split grid and variable data
+        do i=1,2
 		! omit shared data
 		if(shared_list(i).eq.(-1))then
-			temp_data = time_data(:,:,:,i)
+			temp_data = grid_data(:,:,i)
 			write(this%sfid) real(minval(temp_data),kind=8)
-			write(this%sfid) real(maxval(temp_data),kind=8)
+                        write(this%sfid) real(maxval(temp_data),kind=8) 
 		endif
-	enddo
-	do m=1,this%n_data
+        enddo
+
+	do i=1,this%n_data-2
+		! omit shared data
+		if(shared_list(i+2).eq.(-1))then
+			temp_data = time_data(:,:,i)
+			write(this%sfid) real(minval(temp_data),kind=8)
+                        write(this%sfid) real(maxval(temp_data),kind=8) 
+		endif
+        enddo
+
+        do m=1,2
 		! omit shared data
 		if(shared_list(m).eq.-1)then
-			write(this%sfid) (((time_data(i,j,k,m),i=1,max_I),j=1,max_J),k=1,max_K)
+                   write(this%sfid) ((grid_data(i,j,m),&
+                                     i=1,max_I),j=1,max_J)
+		endif
+        enddo
+
+	do m=1,this%n_data-2
+		! omit shared data
+		if(shared_list(m+2).eq.-1)then
+     !write(this%sfid) ((time_data(i,j,m),i=1,max_I),j=1,max_J)
+                        write(this%sfid) ((time_data(i,j,m),&
+                                     i=1,max_I),j=1,max_J)
 		endif
 	enddo
 	deallocate(temp_data)
